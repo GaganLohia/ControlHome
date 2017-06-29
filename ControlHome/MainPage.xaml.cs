@@ -17,11 +17,9 @@ using Windows.Storage;
 using Windows.ApplicationModel;
 using System.Threading.Tasks;
 using System.Diagnostics;
-using Windows.Devices.Sensors;
-using Windows.Devices.Sensors.Custom;
 using Windows.ApplicationModel.Core;
 using Windows.Data.Json;
-// The Blank Page item template is documented at http://go.microsoft.com/fwlink/?LinkId=402352&clcid=0x409
+using Windows.System.Threading;
 
 namespace ControlHome
 {
@@ -36,19 +34,41 @@ namespace ControlHome
     }
     public sealed partial class MainPage : Page
     {
+        SpeechRecognizer Rec;
         public MainPage()
         {
             this.InitializeComponent();
-            
+
+            ThreadPoolTimer timer = ThreadPoolTimer.CreatePeriodicTimer((t) =>
+            {
+                httpget();
+            }, TimeSpan.FromMinutes(0.05));
+
         }
 
+        /// <summary>
+        /// Code for working with server.
+        /// </summary>
+        //Code to get new data from the server
         public async void httpget()
         {
             Windows.Web.Http.HttpClient httpClient = new Windows.Web.Http.HttpClient();
             Uri requestUri = new Uri("https://api.thingspeak.com/channels/231958/feeds/last");
-            Windows.Web.Http.HttpResponseMessage httpResponse = new Windows.Web.Http.HttpResponseMessage();
-            httpResponse = await httpClient.GetAsync(requestUri);
-            httpResponse.EnsureSuccessStatusCode();
+            Windows.Web.Http.HttpResponseMessage httpResponse;
+            try {
+                httpResponse = new Windows.Web.Http.HttpResponseMessage();
+                httpResponse = await httpClient.GetAsync(requestUri);
+                httpResponse.EnsureSuccessStatusCode();
+            }
+            catch
+            {
+                await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
+                  () =>
+                  {
+                      status.Text = "Internet is not working!";
+                  });
+                return;
+            }
             var jsonString = await httpResponse.Content.ReadAsStringAsync();
             JsonObject root = JsonObject.Parse(jsonString);
             RootObject r = new RootObject();
@@ -62,132 +82,54 @@ namespace ControlHome
             await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
                   () =>
                   {
-                      //status.Text = r.field1 + " " + r.field2;
-                      if (r.field1 == "\"1\"")
-                          room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
-                      else if (r.field1 == "\"0\"")
-                          room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-                      if (r.field2 == "\"1\"")
-                          room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
-                      else if (r.field2 == "\"0\"")
-                          room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-
+                      SwitchStatus(Int32.Parse(r.field1[1].ToString()), Int32.Parse(r.field2[1].ToString()));
+                      status.Text = r.field1 + r.field2;
                   });
-
         }
 
-        private void room1switch_Click(object sender, RoutedEventArgs e)
-        {
-            string s = "";
-            if ((room2Switch.Background as SolidColorBrush).Color == Windows.UI.Colors.Green)
-                s = "&field2=1";
-            else
-                s = "&field2=0";
-            if ((room1Switch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
-            {
-
-                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
-                s = "field1=1" + s;
-                http(s);
-            }
-            else
-            {
-                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-                s = "field1=0" + s;
-                http(s);
-            }
-            status.Text = "Room 1 light switched";
-            //status.Text = s;
-        }
-
-        private void room2Switch_Click(object sender, RoutedEventArgs e)
-        {
-            string s = "";
-            if ((room1Switch.Background as SolidColorBrush).Color == Windows.UI.Colors.Green)
-                s = "field1=1";
-            else
-                s = "field1=0";
-            if ((room2Switch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
-            {
-                s = s + "&field2=1";
-                http(s);
-                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
-            }
-            else
-            {
-                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-                s=s + "&field2=0";
-                http(s);
-            }
-            status.Text = "Room 2 light switched";
-            //status.Text = s;
-        }
-
-        public void allLightSwitch()
-        {
-
-            string s = "";
-            if ((room1Switch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
-            {
-
-                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
-                s = "field1=1";
-            }
-            else
-            {
-                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-                s = "field1=0" ;
-            }
-
-            if ((room2Switch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
-            {
-                s = s + "&field2=1";
-                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
-            }
-            else
-            {
-                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-                s = s + "&field2=0";
-            }
-            http(s);
-            status.Text = "All lights switched.";
-        }
-
-        public async void http(string field)
+        //Code to send data to the server. Return true if value is updated on server or false if not.
+        public async Task<bool> http(string field)
         {
             Windows.Web.Http.HttpClient httpClient = new Windows.Web.Http.HttpClient();
-            Uri requestUri = new Uri("https://api.thingspeak.com/update?api_key=CI57AXMBOSM1VQN1&"+field);
-            Windows.Web.Http.HttpResponseMessage httpResponse = new Windows.Web.Http.HttpResponseMessage();
+            Uri requestUri = new Uri("https://api.thingspeak.com/update?api_key=CI57AXMBOSM1VQN1&" + field);
+
             string httpResponseBody = "";
-            httpResponse = await httpClient.GetAsync(requestUri);
-            httpResponse.EnsureSuccessStatusCode();
-            httpResponseBody = await httpResponse.Content.ReadAsStringAsync();
+            Windows.Web.Http.HttpResponseMessage httpResponse;
+            try {
+                httpResponse = new Windows.Web.Http.HttpResponseMessage();
+                httpResponse = await httpClient.GetAsync(requestUri);
+                httpResponse.EnsureSuccessStatusCode();
+                httpResponseBody = await httpResponse.Content.ReadAsStringAsync();
+            }
+            catch
+            {
+                await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
+                  () =>
+                  {
+                      status.Text = "Internet is not working!";
+                  });
+                return false;
+            }
             status.Text = httpResponseBody;
             httpClient = null;
-        }
-
-        public async void tts(string text)
-        {
-            var media = new MediaElement();
-            var s = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
-            var stream = await s.SynthesizeTextToStreamAsync(text);
-            media.SetSource(stream, stream.ContentType);
-            media.Play();
-        }
-
-        private void speechRecognizerSwitch_Click(object sender, RoutedEventArgs e)
-        {
-            InitSpeechRecognizer();
-            if ((speechRecognizerSwitch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
-                speechRecognizerSwitch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+            if (httpResponseBody == "0")
+                return false;
             else
-                speechRecognizerSwitch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
-
+                return true;
         }
-        public async void InitSpeechRecognizer()
+
+        /// <summary>
+        /// Code for voice recognition.
+        /// </summary>
+        //To initialize Speech Recognizer
+        public async void InitSpeechRecognizer(int n)
         {
-            SpeechRecognizer Rec = new SpeechRecognizer();
-            //Event Handlers
+	        if(n==0)
+	        {
+		        Rec.Dispose();
+		        return;
+            }
+            Rec = new SpeechRecognizer();
             Rec.ContinuousRecognitionSession.ResultGenerated += Rec_ResultGenerated;
 
             StorageFile Store = await Package.Current.InstalledLocation.GetFileAsync(@"GrammarFile.xml");
@@ -202,34 +144,67 @@ namespace ControlHome
                 await Rec.ContinuousRecognitionSession.StartAsync();
             }
         }
+
+        //To handle Event by Speech Recognizer. Call TextToSpeech on the basis of that value is updated on server or not and switch the lights.
         private async void Rec_ResultGenerated(SpeechContinuousRecognitionSession sender, SpeechContinuousRecognitionResultGeneratedEventArgs args)
         {
 
             switch (args.Result.Text)
             {
-                case "switch light of room one":
+                case "Turn on light of room one":
                     await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
-                      () =>
+                      async () =>
                       {
-                          room1switch_Click(null, null);
-                          tts("I have switched the light of room one");
+                          bool b = await light1Switch(1);
+                          string s = b ? "I have turned on the light of room one" : "Sorry server can not be updated due to time limit.";
+                          tts(s);
                       });
 
                     break;
-                case "switch light of room two":
+                case "Turn off light of room one":
                     await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
-                    () =>
+                      async () =>
+                      {
+                          bool b = await light1Switch(0);
+                          string s = b ? "I have turned off the light of room one" : "Sorry server can not be updated due to time limit.";
+                          tts(s);
+                      });
+
+                    break;
+                case "Turn on light of room two":
+                    await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
+                    async () =>
                     {
-                        room2Switch_Click(null, null);
-                        tts("I have switched the light of room two");
+                        bool b = await light2Switch(1);
+                        string s = b ? "I have turned on the light of room two" : "Sorry, server can not be updated due to time limit.";
+                        tts(s);
                     });
                     break;
-                case "switch all lights":
+                case "Turn off light of room two":
                     await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
-                    () =>
+                    async () =>
                     {
-                        allLightSwitch();
-                        tts("I have switched the light of both rooms");
+                        bool b = await light2Switch(0);
+                        string s = b ? "I have turned off the light of room two" : "Sorry, server can not be updated due to time limit.";
+                        tts(s);
+                    });
+                    break;
+                case "Turn on all the lights":
+                    await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
+                    async () =>
+                    {
+                        bool b = await allLightSwitch(1);
+                        string s = b ? "I have turned on all the lights" : "Sorry, server can not be updated due to time limit.";
+                        tts(s);
+                    });
+                    break;
+                case "Turn off all the lights":
+                    await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal,
+                    async () =>
+                    {
+                        bool b = await allLightSwitch(0);
+                        string s = b ? "I have turned off all the lights" : "Sorry, server can not be updated due to time limit.";
+                        tts(s);
                     });
                     break;
                 default:
@@ -242,12 +217,148 @@ namespace ControlHome
             }
         }
 
+        //Code for Text to Speech
+        public async void tts(string text)
+        {
+            var media = new MediaElement();
+            var s = new Windows.Media.SpeechSynthesis.SpeechSynthesizer();
+            var stream = await s.SynthesizeTextToStreamAsync(text);
+            media.SetSource(stream, stream.ContentType);
+            media.Play();
+        }
+
+        //Code for Updating UI and sending values to server when all lights are switched. Return string value true if value is updated on server or false if not.
+        public async Task<bool> allLightSwitch(int n)
+        {
+            string s = "";
+            if (n == 1)
+            {
+                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+                s = "field1=1&field2=1";
+                bool b = await http(s);
+                status.Text = b ? "All lights turned on." : "Sorry, server cannot be updated due to time limit.";
+                return b;
+            }
+            else
+            {
+                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+                s = "field1=0&field2=0";
+                bool b = await http(s);
+                status.Text = b ? "All lights turned off." : "Sorry, server cannot be updated due to time limit.";
+                return b;
+            }
+
+
+        }
+
+        //Code for Updating UI and sending values to server when room1 light is switched. Return string value true if value is updated on server or false if not.
+        public async Task<bool> light1Switch(int n)
+        {
+            string s = (room2Switch.Background as SolidColorBrush).Color == Windows.UI.Colors.Green ? "&field2=1" : "&field2=0";
+            if (n == 1)
+            {
+                s = "field1=1" + s;
+                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+                Debug.Write(s+"1234");
+                bool b = await http(s);
+                status.Text = b ? "Room 1 light turned on." : "Sorry, server cannot be updated due to time limit.";
+                return b;
+            }
+            else
+            {
+                s = "field1=0" + s;
+                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+                Debug.Write(s);
+                bool b = await http(s);
+                status.Text = b ? "Room 1 light turned off." : "Sorry, server cannot be updated due to time limit.";
+                return b;
+            }
+        }
+
+        //Code to change status of rooms
+        public void SwitchStatus(int n1,int n2)
+        {
+            if (n1 == 1)
+                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+            else if(n1==0)
+                room1Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+            if (n2 == 1)
+                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+            else if(n2==0)
+                room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+        }
+
+
+        //Code for Updating UI and sending values to server when room2 light is switched. Return string value true if value is updated on server or false if not.
+        public async Task<bool> light2Switch(int n)
+        {
+            
+            string s = (room1Switch.Background as SolidColorBrush).Color == Windows.UI.Colors.Green ? "field1=1" : "field1=0";
+            if (n == 1)
+            {
+                s = s + "&field2=1";
+                Debug.Write(s);
+                bool b = await http(s);
+                status.Text = b ? "Room 2 light turned on." : "Sorry, server cannot be updated due to time limit.";
+		if(b)
+			room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+                return b;
+            }
+            else
+            {
+                s = s + "&field2=0";
+                Debug.Write(s);
+                bool b = await http(s);
+                status.Text = b ? "Room 2 light turned off." : "Sorry, server cannot be updated due to time limit.";
+		if(b)
+			room2Switch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+                return b;
+            }
+        }
+
+        private async void room1switch_Click(object sender, RoutedEventArgs e)
+        {
+            if ((room1Switch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
+                await light1Switch(1);
+            else
+                await light1Switch(0);
+        }
+
+
+        private async void room2Switch_Click(object sender, RoutedEventArgs e)
+        {
+            if ((room2Switch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
+                await light2Switch(1);
+            else
+                await light2Switch(0);
+        }
+
+        
+
+       
+        private void speechRecognizerSwitch_Click(object sender, RoutedEventArgs e)
+        {
+            if ((speechRecognizerSwitch.Background as SolidColorBrush).Color != Windows.UI.Colors.Green)
+            {
+                InitSpeechRecognizer(1);
+                speechRecognizerSwitch.Background = new SolidColorBrush(Windows.UI.Colors.Green);
+            }
+            else
+            {
+                InitSpeechRecognizer(0);
+                speechRecognizerSwitch.Background = new SolidColorBrush(Windows.UI.Colors.Red);
+            }
+
+        }
+        
         private void button_Click(object sender, RoutedEventArgs e1)
         {
-            var timer = new System.Threading.Timer((e) =>
+            ThreadPoolTimer timer = ThreadPoolTimer.CreatePeriodicTimer((t) =>
             {
                 httpget();
-            }, null, 0, Convert.ToInt32(TimeSpan.FromMinutes(0.016).TotalMilliseconds));
+            }, TimeSpan.FromMinutes(0.1));
         }
     }
 }
